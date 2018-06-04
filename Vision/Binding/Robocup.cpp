@@ -48,7 +48,6 @@
 #include <string>
 #include <unistd.h>
 #include "Filters/Custom/FieldBorder.hpp"
-#include "Filters/Custom/RobotByII.hpp"
 
 #include <vector>
 
@@ -623,52 +622,6 @@ void Robocup::readPipeline() {
       std::cerr
           << "Failed to import ball positions, check pipeline. Exception = "
           << e.what() << std::endl;
-    }
-  }
-
-  // Robot detection
-  if (pipeline.isFilterPresent("robotByII")) {
-    try {
-      Vision::Filter &robotDetector_f = pipeline.get("robotByII");
-      const Filters::RobotByII &robotDetector =
-          dynamic_cast<const Filters::RobotByII &>(robotDetector_f);
-
-      if (robotFilter) {
-          std::vector<Eigen::Vector3d> positions;
-          for (auto &robot : robotDetector.robots) {
-              auto tmp = cs->robotPosFromImg(robot.first.x, robot.first.y, 1, 1, false);
-              Eigen::Vector3d in_world(tmp.x, tmp.y, 0);
-              positions.push_back(in_world);
-          }
-          robotFilter->newFrame(positions);
-  
-          LocalisationService *loc = _scheduler->getServices()->localisation;
-          std::vector<Eigen::Vector3d> filteredPositions;
-          for (auto &candidate : robotFilter->getCandidates()) {
-              // XXX: Threshold to Rhioize
-              if (candidate.score > 0.3) {
-                filteredPositions.push_back(candidate.object);
-              }
-          }
-          loc->setOpponentsWorld(filteredPositions);
-      }
-
-      detectedRobots.clear();
-      // Going from pixels to world referential
-      for (size_t id = 0; id < robotDetector.robots.size(); id++) {
-        double robot_x = robotDetector.robots[id].first.x;
-        double robot_y = robotDetector.robots[id].first.y;
-        detectedRobots.push_back(
-            cs->robotPosFromImg(robot_x, robot_y, 1, 1, false));  // false=invariant world reference
-                                                                  // frame (which integrates the
-                                                                  // odometry)
-      }
-      // detectedRobots = keepFrontRobots(detectedRobots);
-      // Filter out robots that should be hidden by front robots.
-    } catch (const std::bad_cast &e) {
-      std::cerr << "Failed to import robot positions, check pipeline. Exception = " << e.what() << std::endl;
-    } catch (const std::runtime_error &exc) {
-      std::cerr << "Robocup::readPipeline: robot detection: runtime_error: " << exc.what() << std::endl;
     }
   }
 
