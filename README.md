@@ -3,9 +3,9 @@
 
 ## Installing APT dependencies
 
-    apt-get install gcc cmake git libtinyxml-dev libncurses5-dev \
+    apt-get install gcc cmake git libncurses5-dev \
         php-cli php-xml libopencv-dev libv4l-dev gnuplot5-qt \
-        python-pip python-empy python-setuptools python-nose
+        python-pip python-setuptools python-nose
 
 ## Installing catkin
 
