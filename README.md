@@ -10,6 +10,14 @@
 ## Installing catkin
 
     sudo pip install -U catkin_tools mock
+    
+## Having a GitHub account with your public key
+
+If you don't have a SSH key, generate one using:
+
+    ssh-keygen -t rsa
+    
+Copy the content of `.ssh/id_rsa.pub` to the GitHub public key.
 
 ## Installing the workspace
 
@@ -64,10 +72,6 @@ Run the following to build the program:
 Our robots communicate with the `10.0.0.1` ip address, so you need to configure your computer to a compatible static address like `10.0.0.2`
 
 It is strongly recommended that you add your private key to the robot. By copying the content of `.ssh/id_rsa.pub` in the `.ssh/authorized_keys` inside the robot.
-
-If you don't have a SSH key, generate one using:
-
-    ssh-keygen -t rsa
     
 ## Deploying the program to the robot
 
