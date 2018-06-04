@@ -44,6 +44,12 @@ And run the install script:
 
     cd flycapture
     sudo ./install_flycapture.sh
+    
+Maybe there will be issues with apt packages, in this case, run:
+
+    sudo apt --fix-broken install
+    
+And try again (you might need to repeat this 2 or 3 times)
 
 ## Installing your environment
 
