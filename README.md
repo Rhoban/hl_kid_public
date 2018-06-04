@@ -17,7 +17,7 @@ If you don't have a SSH key, generate one using:
 
     ssh-keygen -t rsa
     
-Copy the content of `.ssh/id_rsa.pub` to the GitHub public key.
+Sign in on your GitHub account and go to Settings, and then "SSH and GPG keys". Click "New SSH key" and copy the content of `.ssh/id_rsa.pub` in the key field, choose any name you want and validate the new key.
 
 ## Installing the workspace
 
