@@ -17,6 +17,7 @@ using namespace rhoban_utils;
 
 #define STATE_STOPPING          "stopping"
 #define STATE_PLACE             "place"
+#define STATE_STEPPING          "stepping"
 #define STATE_SHOOT             "shoot"
 
 ApproachPotential::Target::Target()
@@ -39,23 +40,28 @@ ApproachPotential::ApproachPotential(Walk *walk)
     // State
     bind->bindNew("state", STM::state, RhIO::Bind::PushOnly)
         ->comment("Approach STM state");
+        
+    bind->bindNew("repulsion", repulsion, RhIO::Bind::PullOnly)
+        ->defaultValue(0.7);
 
     bind->bindNew("degsPerMeter", degsPerMeter, RhIO::Bind::PullOnly)
-        ->defaultValue(200)->persisted(true);
-
-    // Ball position target
-    bind->bindNew("targetX", targetX, RhIO::Bind::PullOnly)
-        ->defaultValue(0.1)->persisted(true);
-    bind->bindNew("targetY", targetY, RhIO::Bind::PullOnly)
-        ->defaultValue(0.08)->persisted(true);
+        ->defaultValue(30);
 
     // Servoing
     bind->bindNew("stepP", stepP, RhIO::Bind::PullOnly)
-        ->defaultValue(1)->persisted(true);
+        ->defaultValue(1);
+    bind->bindNew("lateralP", lateralP, RhIO::Bind::PullOnly)
+        ->defaultValue(3);
+    bind->bindNew("stepI", stepI, RhIO::Bind::PullOnly)
+        ->defaultValue(0.0);
+    bind->bindNew("lateralI", lateralI, RhIO::Bind::PullOnly)
+        ->defaultValue(0.0);
     bind->bindNew("stepPunch", stepPunch, RhIO::Bind::PullOnly)
-        ->defaultValue(0)->persisted(true);
-    bind->bindNew("rotationP", rotationP, RhIO::Bind::PullOnly)
-        ->defaultValue(10)->persisted(true);
+        ->defaultValue(8);
+    bind->bindNew("rotationP", aligner.k_p, RhIO::Bind::PullOnly)
+        ->defaultValue(10);
+    bind->bindNew("rotationI", aligner.k_i, RhIO::Bind::PullOnly)
+        ->defaultValue(0.0);
 
     // Acceptance
     bind->bindNew("distanceThreshold", distanceThreshold, RhIO::Bind::PullOnly)
@@ -66,6 +72,11 @@ ApproachPotential::ApproachPotential(Walk *walk)
     // Don't walk
     bind->bindNew("dontWalk", dontWalk, RhIO::Bind::PullOnly)
         ->defaultValue(false);
+
+    // Are we using a final last step
+    bind->node().newBool("useLastStep")
+        ->persisted(false)
+        ->defaultValue(true);
 }
 
 Angle ApproachPotential::getKickCap()
@@ -82,7 +93,19 @@ void ApproachPotential::onStart()
 {
     ApproachMove::onStart();
     lastFootChoice = 1e6;
+    kick_score = 0;
     setState(STATE_PLACE);
+    
+    stepper.max = walk->maxStep;
+    stepper.min = -walk->maxStepBackward;
+    lateraler.min = -walk->maxLateral;
+    lateraler.max = walk->maxLateral;
+    aligner.min = -walk->maxRotation;
+    aligner.max = walk->maxRotation;
+    
+    stepper.reset();
+    lateraler.reset();
+    aligner.reset();
 }
 
 void ApproachPotential::onStop()
@@ -106,15 +129,17 @@ void ApproachPotential::getControl(const Target &target, const Point &ball,
     double X(0), Y(0);
     double norm2 = sqrt(pow(target.position.x, 2) + pow(target.position.y, 2));
     if (norm2 > 0) {
-        X = 0.67*ball.x*pow(pow(ball.x, 2) + pow(ball.y, 2), -1.335)*sqrt(pow(target.position.x, 2) + pow(target.position.y, 2)) - target.position.x*pow(pow(ball.x, 2) + pow(ball.y, 2), -0.335)/sqrt(pow(target.position.x, 2) + pow(target.position.y, 2));
-        Y = 0.67*ball.y*pow(pow(ball.x, 2) + pow(ball.y, 2), -1.335)*sqrt(pow(target.position.x, 2) + pow(target.position.y, 2)) - target.position.y*pow(pow(ball.x, 2) + pow(ball.y, 2), -0.335)/sqrt(pow(target.position.x, 2) + pow(target.position.y, 2));
+        X = ball.x*repulsion*pow(pow(ball.x, 2) + pow(ball.y, 2), -1/2*repulsion)*sqrt(pow(target.position.x, 2) + pow(target.position.y, 2))/(pow(ball.x, 2) + pow(ball.y, 2)) - target.position.x*pow(pow(ball.x, 2) + pow(ball.y, 2), -1/2*repulsion)/sqrt(pow(target.position.x, 2) + pow(target.position.y,
+ 2));
+        Y = ball.y*repulsion*pow(pow(ball.x, 2) + pow(ball.y, 2), -1/2*repulsion)*sqrt(pow(target.position.x, 2) + pow(target.position.y, 2))/(pow(ball.x, 2) + pow(ball.y, 2)) - target.position.y*pow(pow(ball.x, 2) + pow(ball.y, 2), -1/2*repulsion)/sqrt(pow(target.position.x, 2) + pow(target.position.y,
+ 2));
     }
 
     // XXX: Some below variable should be rhiorized
     Point control(-X, -Y);
 
     // XXX: dist here may be replaced with the distance following the potential fields
-    double P = dist*stepP*100;
+    double P = dist*100;
     control.normalize(P);
 
     // Applying punch
@@ -139,7 +164,7 @@ void ApproachPotential::getControl(const Target &target, const Point &ball,
         // We are near the ball, let's face it
         error = ballCap;
     }
-    if (dist < 0.2) {
+    if (dist < 0.4) {
         // We are near the goal, let's face the goal
         error = targetCap;
     }
@@ -150,19 +175,33 @@ void ApproachPotential::getControl(const Target &target, const Point &ball,
     }
 
     // Response
-    x = control.x*stepP;
-    y = control.y*stepP;
-    yaw = error*rotationP;
+    x = control.x;
+    y = control.y;
+    yaw = error;
 }
 
 void ApproachPotential::step(float elapsed)
 {
     bind->pull();
+    
+    stepper.k_p = stepP;
+    lateraler.k_p = lateralP;
+    
+    stepper.k_i = stepI;
+    lateraler.k_i = lateralI;
+    
     auto loc = getServices()->localisation;
 
     if (state == STATE_SHOOT) {
         if (!walk->isKicking()) {
             setState(STATE_PLACE);
+        }
+    }
+    
+    if (state == STATE_STEPPING) {
+        if (!walk->isLastStep()) {
+            requestKick();
+            setState(STATE_SHOOT);
         }
     }
 
@@ -230,7 +269,7 @@ void ApproachPotential::step(float elapsed)
                 double cX, cY, cYaw;
                 getControl(t, ball, cX, cY, cYaw);
                 double score = t.position.getLength();
-                score += fabs(cYaw)/degsPerMeter;
+                score += fabs(rad2deg(cYaw))/degsPerMeter;
 
                 if (ballField.x < 0) {
                     auto defendError = fabs((t.yaw - defendTargetDir).getSignedValue());
@@ -238,7 +277,7 @@ void ApproachPotential::step(float elapsed)
                         score *= 30*defendError;
                     }
                 }
-                //std::cout << "Score for " << t.kickName << " / " << t.yaw.getSignedValue() <<
+                // std::cout << "Score for " << t.kickName << " / " << t.yaw.getSignedValue() <<
                 //    " : " << score << std::endl;
 
                 if (bestScore < 0 || score < bestScore) {
@@ -246,6 +285,8 @@ void ApproachPotential::step(float elapsed)
                     bestScore = score;
                 }
             }
+            
+            // std::cout << "Target: " << target.position.x << ", " << target.position.y << ", " << target.yaw.getSignedValue() << std::endl;
 
             // Setting expectedKick
             expectedKick = target.kickName;
@@ -255,13 +296,77 @@ void ApproachPotential::step(float elapsed)
             updateKickScore(elapsed);
 
             if (kick_score >= 1.0) {
-                requestKick();
-                walk->control(!dontWalk, 0, 0, 0);
-                setState(STATE_SHOOT);
+                walk->control(false, 0, 0, 0);
+                if (bind->node().getBool("useLastStep")) {
+                    //Compute last step displacement
+                    Eigen::Vector3d dpose;
+                    if (expectedKick != "lateral") {
+                        //In case of classic or small forward kick 
+                        //rechoose the kick foot for last step
+                        Eigen::Vector3d dposeLeft = computeLastStepDelta(expectedKick, false);
+                        Eigen::Vector3d dposeRight = computeLastStepDelta(expectedKick, true);
+                        //Check which pose is reachable at next step
+                        double phase = walk->getPhase();
+                        bool isReachableLeft = 
+                            (dposeLeft.y() >= 0.0 && phase < 0.5) || (dposeLeft.y() <= 0.0 && phase > 0.5);
+                        bool isReachableRight = 
+                            (dposeRight.y() >= 0.0 && phase < 0.5) || (dposeRight.y() <= 0.0 && phase > 0.5);
+                        //Compute command effort
+                        double effortLeft = Eigen::Vector2d(dposeLeft.x(), dposeLeft.y()).norm();
+                        double effortRight = Eigen::Vector2d(dposeRight.x(), dposeRight.y()).norm();
+                        //Select the minimal step delta which is possible or
+                        //the minimal step if none are currently possible
+                        bool isSelectedRight = false;
+                        if (
+                            (!isReachableLeft && !isReachableRight) ||
+                            (isReachableLeft && isReachableRight)
+                        ) {
+                            //None or all are possible, choose the minimal effort one
+                            isSelectedRight = (effortLeft > effortRight);
+                        } else if (isReachableLeft && !isReachableRight && fabs(dposeLeft.y()) < 0.06) {
+                            isSelectedRight = false;
+                        } else if (!isReachableLeft && isReachableRight && fabs(dposeRight.y()) < 0.06) {
+                            isSelectedRight = true;
+                        } else {
+                            isSelectedRight = kickRight;
+                        }
+                        dpose = isSelectedRight ? dposeRight : dposeLeft;
+                        kickRight = isSelectedRight;
+                        std::cout << "LEPH: name=" << expectedKick << " foot=" << kickRight << std::endl;
+                        std::cout << "LEPH: phase:" << phase << std::endl;
+                        std::cout << "LEPH: dposeLeft: " << dposeLeft.transpose() << std::endl;
+                        std::cout << "LEPH: dposeRight: " << dposeRight.transpose() << std::endl;
+                        std::cout << "LEPH: isReachLeft: " << isReachableLeft << std::endl;
+                        std::cout << "LEPH: isReachRight: " << isReachableRight << std::endl;
+                        std::cout << "LEPH: effortLeft: " << effortLeft << std::endl;
+                        std::cout << "LEPH: effortRight: " << effortRight << std::endl;
+                        std::cout << "LEPH: selected: " << isSelectedRight << std::endl;
+                        std::cout << "LEPH: selectPose: " << dpose.transpose() << std::endl;
+                    } else {
+                        dpose = computeLastStepDelta(expectedKick, kickRight);
+                    }
+                    //Security bounds
+                    if (dpose.x() > 0.1) dpose.x() = 0.1;
+                    if (dpose.x() < -0.05) dpose.x() = -0.05;
+                    if (dpose.y() > 0.1) dpose.y() = 0.1;
+                    if (dpose.y() < -0.1) dpose.y() = -0.1;
+                    if (dpose.z() > 0.8) dpose.z() = 0.8;
+                    if (dpose.z() < -0.8) dpose.z() = -0.8;
+                    walk->askLastStep(dpose);
+                    setState(STATE_STEPPING);
+                } else {
+                    requestKick();
+                    setState(STATE_SHOOT);
+                }
             } else {
                 // Applying control
                 double controlX, controlY, controlYaw;
                 getControl(target, ball, controlX, controlY, controlYaw);
+                
+                controlX = stepper.update(controlX, elapsed);
+                controlY = lateraler.update(controlY, elapsed);
+                controlYaw = aligner.update(controlYaw, elapsed);
+                
                 walk->control(!dontWalk, controlX, controlY, controlYaw);
             }
         } else {
@@ -274,8 +379,78 @@ void ApproachPotential::step(float elapsed)
 
 void ApproachPotential::enterState(std::string state)
 {
+    stepper.reset();
+    lateraler.reset();
+    aligner.reset();
 }
 
 void ApproachPotential::exitState(std::string state)
 {
 }
+  
+Eigen::Vector3d ApproachPotential::computeLastStepDelta(
+    const std::string& kickName, bool isRightFoot)
+{
+    auto cap = ApproachMove::getKickCap();
+    auto loc = getServices()->localisation;
+    auto ball = loc->getBallPosSelf();
+    Eigen::Vector3d currentEgoToBall(ball.x, ball.y, cap.getSignedValue()*M_PI/180.0);
+    double phase = walk->getPhase();
+    Eigen::Vector4d order = walk->getRawOrder();
+
+    //Predict egocentric ball pose 
+    //at the end of current step.
+    //Compute the remaining delta pose
+    //to travel to the end of 
+    //current step (half cycle).
+    double ratio;
+    if (phase < 0.5) {
+        ratio = 2.0*phase;
+    } else {
+        ratio = 2.0*(phase-0.5);
+    }
+    const double odometryTransCoef = 1.1;
+    const double odometryRotCoef = 1.0;
+    Eigen::Vector3d egoAtNext(
+        odometryTransCoef*(1.0-ratio)*order.x(),
+        odometryTransCoef*(1.0-ratio)*order.y(),
+        odometryRotCoef*(1.0-ratio)*order.z());
+    double vectX = currentEgoToBall.x() - egoAtNext.x();
+    double vectY = currentEgoToBall.y() - egoAtNext.y();
+    double angle = currentEgoToBall.z() - egoAtNext.z();
+    double aa = egoAtNext.z();
+    double vectInSrcX = vectX*cos(-aa) - vectY*sin(-aa);
+    double vectInSrcY = vectX*sin(-aa) + vectY*cos(-aa);
+    Eigen::Vector3d nextEgoToBall(vectInSrcX, vectInSrcY, angle);
+    
+    //Compute last step displacement
+    Eigen::Vector3d targetEgoToBall = kmc.getKickModel(kickName)
+        .getKickZone().getWishedPos(isRightFoot);
+    targetEgoToBall.z() *= -1.0;
+    Eigen::Vector3d targetBallToEgo;
+    double tmpA = -targetEgoToBall.z();
+    targetBallToEgo.x() = -targetEgoToBall.x()*std::cos(tmpA) + targetEgoToBall.y()*sin(tmpA);
+    targetBallToEgo.y() = -targetEgoToBall.x()*std::sin(tmpA) - targetEgoToBall.y()*cos(tmpA);
+    targetBallToEgo.z() = tmpA;
+    Eigen::Vector3d dpose(
+        nextEgoToBall.x(), 
+        nextEgoToBall.y(), 
+        nextEgoToBall.z() + targetBallToEgo.z());
+    dpose.x() += 
+        targetBallToEgo.x()*std::cos(nextEgoToBall.z()) - 
+        targetBallToEgo.y()*std::sin(nextEgoToBall.z());
+    dpose.y() += 
+        targetBallToEgo.x()*std::sin(nextEgoToBall.z()) + 
+        targetBallToEgo.y()*std::cos(nextEgoToBall.z());
+
+    std::cout << "LEPH|: phase: " << phase << std::endl;
+    std::cout << "LEPH|: order:     " << order.transpose() << std::endl;
+    std::cout << "LEPH|: ratio: " << ratio << std::endl;
+    std::cout << "LEPH|: egoAtNext: " << egoAtNext.transpose() << std::endl;
+    std::cout << "LEPH|: currentToBall: " << currentEgoToBall.transpose() << std::endl;
+    std::cout << "LEPH|: nextToBall   : " << nextEgoToBall.transpose() << std::endl;
+    std::cout << "LEPH|: dpose: " << dpose.transpose() << std::endl;
+
+    return dpose;
+}
+

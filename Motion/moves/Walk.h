@@ -9,17 +9,8 @@
 #include <Types/MatrixLabel.hpp>
 #include <Utils/Scheduling.hpp>
 #include <rhoban_unsorted/log_model.h>
-
-/**
- * Enable or not the Quintic Walk engine
- */
-#define USE_QUINTICWALK 
-
-#ifdef USE_QUINTICWALK
+#include <rhoban_utils/history/history.h>
 #include <QuinticWalk/QuinticWalk.hpp>
-#else
-#include <IKWalk/IKWalk.hpp>
-#endif
 
 class Kick;
 class Walk : public Move
@@ -52,6 +43,12 @@ class Walk : public Move
          * Are we moving?
          */
         bool isMoving();
+
+        /**
+         * Return true if a last kick 
+         * is currently beeing done
+         */
+        bool isLastStep() const;
 
         /**
          * Return the current walk phase
@@ -100,6 +97,13 @@ class Walk : public Move
         Eigen::Vector3d getMaxOrders() const;
         Eigen::Vector3d getMinDeltaOrders() const;
         Eigen::Vector3d getMaxDeltaOrders() const;
+
+        /**
+         * If the walk is disable, ask for a last step of given
+         * pose change. Step foot is automatically chosen.
+         * [dx, dy, dtheta] in meters and radians.
+         */
+        void askLastStep(const Eigen::Vector3d& deltaPose);
         
         // Maximum rotation speed [deg/step]
         float maxRotation;
@@ -127,6 +131,7 @@ class Walk : public Move
         void endShoot();
         
         // Kick warmup and cooldown
+        double t;
         float waitT;
         float warmup;
         float cooldown;
@@ -138,8 +143,16 @@ class Walk : public Move
          */
         bool lastWalkEnable;
         bool walkEnable;
+        bool walkEnableTarget;
+        float walkEnableTimeSinceChange;
+        bool walkTransitionning;
         bool walkKickLeft;
         bool walkKickRight;
+        float pressureY;
+        float pressureYStd;
+        float pressureYStdThresholdWarmup;
+        float pressureYStdThresholdCooldown;
+        rhoban_utils::History ratioHistory;
         std::string walkKickName;
         double walkStep;
         double walkLateral;
@@ -181,7 +194,6 @@ class Walk : public Move
 
         float xOffset, zOffset;
 
-#ifdef USE_QUINTICWALK
         Leph::QuinticWalk _engine;
         Eigen::Vector3d _orders;
         bool _isEnabled;
@@ -191,9 +203,10 @@ class Walk : public Move
         double _footDistance;
         double _footYOffset;
         bool _securityEnabled;
-#else
-        Leph::IKWalk::Parameters params;
-#endif
+
+        double _lastStepPhase;
+        int _lastStepCount;
+        Leph::VectorLabel _lastStepParams;
 
         Leph::Scheduling scheduling;
 
@@ -209,4 +222,11 @@ class Walk : public Move
         double lastPhase;
 
 	float elbowOffset;
+
+	// GoalKeeper related attributs:
+	bool gkMustRaise;
+	bool gkMustBlock;
+	float initElbowOffsetValue;
+	float initArmsRollValue;
+	float initTrunkZOffsetValue;
 };

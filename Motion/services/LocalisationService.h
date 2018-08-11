@@ -37,6 +37,7 @@ class LocalisationService : public Service
         rhoban_geometry::Point getGoalPosWorld();
         rhoban_geometry::Point getGoalPosSelf();
         rhoban_geometry::Point getGoalPosField();
+        rhoban_geometry::Point getOurGoalPosField();
         rhoban_geometry::Point getLeftGoalPosSelf();
         rhoban_geometry::Point getRightGoalPosSelf();
         rhoban_geometry::Point getFieldPos();
@@ -47,6 +48,7 @@ class LocalisationService : public Service
         rhoban_utils::Angle getOurBallToGoalDirSelf();
 
         float fieldQ, fieldConsistency;
+        bool consistencyEnabled;
         double getGoalCap();
         double getLeftGoalCap();
         double getRightGoalCap();
@@ -62,20 +64,11 @@ class LocalisationService : public Service
         void updateOpponentsPos();
         void setOpponentsWorld(const std::vector<Eigen::Vector3d> &pos);
 
-        /// Update the string representing mates
-        void updateMatesPos();
-
         /// Update the string representing shared_opponents
         void updateSharedOpponentsPos();
 
        /// Return a thread safe copy of the team mates positions by Id
        std::map<int, Eigen::Vector3d> getTeamMatesField();
-
-       /// Update the given team mate, add it if it was not present before
-       void updateTeamMate(int id, const Eigen::Vector3d & poseInField);
-
-       /// Remove the mate from the list of localized mates if present
-       void removeTeamMate(int id);
 
        /// Return the list of opponents seen by other mates
        std::vector<Eigen::Vector2d>  getSharedOpponents();
@@ -111,7 +104,7 @@ class LocalisationService : public Service
         void setPosSelf(const Eigen::Vector3d &left, 
 			const Eigen::Vector3d &right, 
 			const Eigen::Vector3d &center, float orientation, 
-                        float quality, float consistency);
+                        float quality, float consistency, bool consistencyEnabled=false);
         void updatePosSelf();
 
         // Goal Scanner target
@@ -149,6 +142,8 @@ class LocalisationService : public Service
         void setVisualCompassStatus(bool inUse);
         bool getVisualCompassStatus() const;
 
+        rhoban_geometry::Point worldToField(Eigen::Vector3d world);
+
         void enableFieldFilter(bool enable=true);
 	void isGoalKeeper(bool status=false);
 
@@ -182,8 +177,6 @@ class LocalisationService : public Service
         std::string opponents;
         std::string mates;
         std::string sharedOpponents;
-
-        rhoban_geometry::Point worldToField(Eigen::Vector3d world);
         
         // Ticking
         bool tick(double elapsed) override;

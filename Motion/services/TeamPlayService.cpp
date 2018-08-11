@@ -15,52 +15,42 @@ using namespace rhoban_utils;
 using namespace rhoban_geometry;
 using namespace rhoban_team_play;
 
-TeamPlayService::TeamPlayService() : 
-    _bind(nullptr), 
+TeamPlayService::TeamPlayService() :
+    _bind(nullptr),
     _broadcaster(nullptr),
     _selfInfo(),
     _allInfo(),
     _t(0.0),
     _isEnabled(true),
-    _broadcastPeriod(0.3)
+    _broadcastPeriod(1.0/TEAM_PLAY_FREQUENCY)
 
 {
     //Initialize RhiO
     _bind = new RhIO::Bind("teamplay");
     _bind->bindNew("enable", _isEnabled, RhIO::Bind::PullOnly)
-        ->defaultValue(true)->persisted(true);
+        ->defaultValue(true);
     _bind->bindNew("broadcastPeriod", _broadcastPeriod, RhIO::Bind::PullOnly)
         ->comment("UDP broadcast period in seconds")
-        ->defaultValue(0.3)->persisted(true);
-// TODO: solve issue with RhIO and enums
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstrict-aliasing"
-    _bind->bindNew("priority", (int&)_selfInfo.priority, RhIO::Bind::PullOnly)
-        ->comment("0: low; 1: normal; 2: high Priority")
-        ->defaultValue(1)->persisted(true);
-#pragma GCC diagnostic pop
+        ->defaultValue(0.2);
     _bind->bindFunc("team", "Display information about teamplay",
         &TeamPlayService::cmdTeam, *this);
-    _bind->bindNew("teamRadius", teamRadius)
-        ->defaultValue(1)->minimum(0.0)->maximum(10.0)
-        ->persisted(true);
-    _bind->bindNew("refereeRadius", refereeRadius)
-        ->defaultValue(1.10)->minimum(0.0)->maximum(2.0)
-        ->comment("Additionnal radius to the teamRadius when referee asks to let play")
-        ->persisted(true);
-    _bind->bindNew("aggressivity", aggressivity, RhIO::Bind::PullOnly)
-        ->defaultValue(0.75)->minimum(0.0)->maximum(1.0)
-        ->comment("Is the placing aggressive ore defensive?")
-        ->persisted(true);
+
+    _bind->bindNew("refereeRadius", refereeRadius, RhIO::Bind::PushOnly)
+        ->minimum(0.0)->maximum(2.0)
+        ->comment("Additionnal radius to the teamRadius when referee asks to let play");
+    refereeRadius = 1.05;
+
+    _bind->bindNew("timeSinceLastKick", _selfInfo.timeSinceLastKick, RhIO::Bind::PushOnly)
+        ->comment("Time since I performed the last kick [s]")
+        ->defaultValue(10.0);
 
     //Initialize UDP communication
-    _broadcaster = new rhoban_utils::UDPBroadcast(27645, 27645);
+    _broadcaster = new rhoban_utils::UDPBroadcast(TEAM_PLAY_PORT, TEAM_PLAY_PORT);
     _t = 0;
 
     //Initialize self info
     _selfInfo.id = 0;
-    _selfInfo.state = Inactive;
-    _selfInfo.priority = NormalPriority;
+    _selfInfo.state = Unknown;
     _selfInfo.ballX = 0.0;
     _selfInfo.ballY = 0.0;
     _selfInfo.ballQ = 0.0;
@@ -88,7 +78,7 @@ int TeamPlayService::myId()
 {
     return Helpers::getServices()->referee->id;
 }
-        
+
 const TeamPlayInfo& TeamPlayService::selfInfo() const
 {
     return _selfInfo;
@@ -97,103 +87,10 @@ TeamPlayInfo& TeamPlayService::selfInfo()
 {
     return _selfInfo;
 }
-        
+
 const std::map<int, TeamPlayInfo>& TeamPlayService::allInfo() const
 {
     return _allInfo;
-}
-        
-TeamPlayState TeamPlayService::myRole()
-{
-    std::map<int, TeamPlayInfo> robots;
-
-    // Collecting available robots and their states
-    auto referee =  Helpers::getServices()->referee;
-    for (auto &entry : _allInfo) {
-        auto info = entry.second;
-        if ((info.state == PlacingA || info.state == PlacingB || 
-             info.state == PlacingC || info.state == PlacingD)
-                && !info.isOutdated()
-                && !referee->isPenalized(info.id)) {
-            robots[info.id] = info;
-        }
-    }
-
-    // Collecting configs
-    typedef std::map<int, TeamPlayState> Config;
-
-    std::function<std::vector<Config>(std::map<int, TeamPlayInfo>)>
-    collectConfigs = [&collectConfigs](std::map<int, TeamPlayInfo> robots) -> std::vector<Config> {
-        std::vector<Config> result;
-
-        for (auto &entry : robots) {
-            int id = entry.first;
-            for (auto role : {PlacingA, PlacingB, PlacingC, PlacingD}) {
-                if (entry.second.scoreFor(role) >= 0) {
-                    auto tmp = robots;
-                    tmp.erase(entry.first);
-                    if (tmp.size()) {
-                        auto configs = collectConfigs(tmp);
-                        for (auto &config : configs) {
-                            config[id] = role;
-                            result.push_back(config);
-                        }
-                    } else {
-                        Config config;
-                        config[id] = role;
-                        result.push_back(config);
-                    }
-                }
-            }
-        }
-
-        return result;
-    };
-
-    auto configs = collectConfigs(robots);
-
-    if (!robots.count(myId()) || (configs.size() == 0)) {
-        return PlacingA;
-    }
-
-    auto bestConfig = configs[0];
-    double best = -1;
-    for (auto &config : configs) {
-        double score = 0;
-        double ratio = 0;
-        std::map<TeamPlayState, int> count;
-        count[PlacingA] = 0;
-        count[PlacingB] = 0;
-        count[PlacingC] = 0;
-        count[PlacingD] = 0;
-        for (auto entry : config) {
-            int id = entry.first;
-            TeamPlayState role = entry.second;
-            count[role] += 1;
-            score += robots[id].scoreFor(role);
-            if (role != robots[id].state) score += 1;
-
-            if (role == PlacingA || role == PlacingB) {
-                ratio += 1.0/robots.size();
-            }
-        }
-
-        // Not having 2 robots for the same target
-        for (auto entry : count) {
-            if (entry.second > 1) {
-                score += 5000;
-            }
-        }
-
-        score += fabs(ratio-aggressivity)*1000;
-
-        if (score < best || best < 0) {
-            best = score;
-            bestConfig = config;
-        }
-    }
-
-    return bestConfig[myId()];
 }
 
 bool TeamPlayService::tick(double elapsed)
@@ -224,7 +121,14 @@ bool TeamPlayService::tick(double elapsed)
         _allInfo.clear();
     }
 
+    _bind->push();
+
     return true;
+}
+
+bool TeamPlayService::isEnabled()
+{
+    return _isEnabled;    
 }
 
 void TeamPlayService::messageSend()
@@ -256,19 +160,19 @@ void TeamPlayService::messageSend()
         _selfInfo.fieldOk = decision->isFieldQualityGood;
         //Playing state
         strncpy(
-            _selfInfo.stateReferee, 
+            _selfInfo.stateReferee,
             RhIO::Root.getStr("referee/state").c_str(),
             sizeof(_selfInfo.stateReferee));
         strncpy(
-            _selfInfo.stateRobocup, 
+            _selfInfo.stateRobocup,
             RhIO::Root.getStr("moves/robocup/state").c_str(),
             sizeof(_selfInfo.stateRobocup));
         strncpy(
-            _selfInfo.statePlaying, 
+            _selfInfo.statePlaying,
             RhIO::Root.getStr("moves/playing/state").c_str(),
             sizeof(_selfInfo.statePlaying));
         strncpy(
-            _selfInfo.stateSearch, 
+            _selfInfo.stateSearch,
             RhIO::Root.getStr("moves/search/state").c_str(),
             sizeof(_selfInfo.stateSearch));
         strncpy(
@@ -287,9 +191,10 @@ void TeamPlayService::messageSend()
         if (opponents.size() > MAX_OBSTACLES) {
           logger.warning("Too many obstacles to broadcast");
         }
+        _selfInfo.obstaclesRadius = loc->teamMatesRadius;
         for (int oppIdx  = 0; oppIdx < _selfInfo.nbObstacles; oppIdx++) {
-          _selfInfo.obstaclesX[oppIdx] = opponents[oppIdx].getX();
-          _selfInfo.obstaclesY[oppIdx] = opponents[oppIdx].getY();
+          _selfInfo.obstacles[oppIdx][0] = opponents[oppIdx].getX();
+          _selfInfo.obstacles[oppIdx][1] = opponents[oppIdx].getY();
         }
 
         //Send UDP broadcast
@@ -306,10 +211,9 @@ void TeamPlayService::processInfo(TeamPlayInfo info)
     auto loc = getServices()->localisation;
     // TODO: handle localization quality
     if (info.id != myId()) {
-      loc->updateTeamMate(info.id, Eigen::Vector3d(info.fieldX, info.fieldY, info.fieldYaw));
       std::vector<Eigen::Vector2d> opponents_seen(info.nbObstacles);
       for (int idx = 0; idx < info.nbObstacles; idx++) {
-        opponents_seen[idx] = Eigen::Vector2d(info.obstaclesX[idx], info.obstaclesY[idx]);
+        opponents_seen[idx] = Eigen::Vector2d(info.obstacles[idx][0], info.obstacles[idx][1]);
       }
       loc->updateSharedOpponents(info.id, opponents_seen);
     }
@@ -335,23 +239,19 @@ std::string TeamPlayService::cmdTeam()
             ss << "- Is handling the ball" << std::endl;
         } else if (info.state == Playing) {
             ss << "- Is playing" << std::endl;
+        } else if (info.state == Unknown) {
+            ss << "- Unknown" << std::endl;
         } else if (info.state == Inactive) {
             ss << "- Is not active" << std::endl;
-        } else if (info.state == PlacingA) {
-            ss << "- Is placing A" << std::endl;
-        } else if (info.state == PlacingB) {
-            ss << "- Is placing B" << std::endl;
-        } else if (info.state == PlacingC) {
-            ss << "- Is placing C" << std::endl;
-        } else if (info.state == PlacingD) {
-            ss << "- Is placing D" << std::endl;
+        } else if (info.state == GoalKeeping) {
+            ss << "- Goal Keeping" << std::endl;
         } else {
             ss << "- Unknown state (?)" << std::endl;
         }
-        ss << "- Ball distance: " << info.getBallDistance() 
-            << ", X=" << info.ballX << " Y=" << info.ballY 
+        ss << "- Ball distance: " << info.getBallDistance()
+            << ", X=" << info.ballX << " Y=" << info.ballY
             << ", quality: " << info.ballQ << std::endl;
-        ss << "- Field X: " << info.fieldX << ", Y: " << info.fieldY 
+        ss << "- Field X: " << info.fieldX << ", Y: " << info.fieldY
             << ", quality: " << info.fieldQ << std::endl;
         ss << "- State Referee: " << info.stateReferee << std::endl;
         ss << "- State RoboCup: " << info.stateRobocup << std::endl;
@@ -363,9 +263,3 @@ std::string TeamPlayService::cmdTeam()
 
     return ss.str();
 }
-
-TeamPlayPriority TeamPlayService::myPriority()
-{
-    return selfInfo().priority;
-}
-

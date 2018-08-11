@@ -1,5 +1,5 @@
-#include <algorithm>
 #include <math.h>
+#include <algorithm>
 #include "Walk.h"
 #include "Head.h"
 #include <RhIO.hpp>
@@ -14,6 +14,7 @@
 #include <scheduler/MoveScheduler.h>
 #include <rhoban_utils/control/variation_bound.h>
 #include <rhoban_utils/nominal/nominal.h>
+#include <rhoban_utils/stats/stats.h>
 #include <cstring>
 #include "Kick.h"
 
@@ -86,11 +87,10 @@ static bool phasePassed(float before, float after, float phase)
 }
 
 Walk::Walk(Kick *kickMove)
-    : kickMove(kickMove)
+    : kickMove(kickMove), ratioHistory(0.5)
 {
-#ifdef USE_QUINTICWALK
     _params = _engine.getParameters();
-#endif
+    _lastStepParams = _engine.getParameters();
     Move::initializeBinding();
 
 #ifdef MODE_NOMINAL
@@ -112,15 +112,6 @@ Walk::Walk(Kick *kickMove)
                             return "Performing a kick";
                           });
 
-#ifndef USE_QUINTICWALK
-    bind->bindNew("freq", params.freq, RhIO::Bind::PullOnly)
-        ->comment("Walk frequency")->persisted(true)
-        ->defaultValue(2)->minimum(0.1)->maximum(10.0)
-        ;
-    bind->bindNew("supportPhaseRatio", params.supportPhaseRatio, RhIO::Bind::PullOnly)
-        ->comment("Support phase ratio")->persisted(true)
-        ->defaultValue(0.0)->minimum(0.0)->maximum(1.0);
-#else
     bind->bindNew("freq", _params("freq"), RhIO::Bind::PullOnly)
         ->comment("Walk frequency")->persisted(true)
         ->defaultValue(2)->minimum(0.1)->maximum(10.0)
@@ -128,63 +119,22 @@ Walk::Walk(Kick *kickMove)
     bind->bindNew("supportPhaseRatio", _params("doubleSupportRatio"), RhIO::Bind::PullOnly)
         ->comment("Support phase ratio")->persisted(true)
         ->defaultValue(0.0)->minimum(0.0)->maximum(1.0);
-#endif
 
     // Offsets
-#ifndef USE_QUINTICWALK
-    bind->bindNew("footYOffset", params.footYOffset, RhIO::Bind::PullOnly)
-        ->comment("Front Y offset")->persisted(true)
-        ->defaultValue(0.01)->minimum(-0.1)->maximum(0.1)
-        ;
-#else
     bind->bindNew("footYOffset", _footYOffset, RhIO::Bind::PullOnly)
         ->comment("Front Y offset")->persisted(true)
         ->defaultValue(0.01)->minimum(-0.1)->maximum(0.1)
         ;
-#endif
     bind->bindNew("trunkYOffset", trunkYOffset, RhIO::Bind::PullOnly)
         ->comment("Trunk Y offset")->persisted(true)
         ->defaultValue(0.00)->minimum(-0.1)->maximum(0.1)
         ;
-#ifndef USE_QUINTICWALK
-    bind->bindNew("trunkZOffset", params.trunkZOffset, RhIO::Bind::PullOnly)
-        ->comment("Trunk Z offset")->persisted(true)
-        ->defaultValue(0.02)->minimum(0.0)->maximum(0.1)
-        ;
-    bind->bindNew("trunkRoll", trunkRoll, RhIO::Bind::PullOnly)
-        ->comment("Roll of the trunk")->persisted(true)
-        ->defaultValue(0.0)->minimum(-45.0)->maximum(45.0)
-        ;
-#else
     bind->bindNew("trunkZOffset", _trunkZOffset, RhIO::Bind::PullOnly)
         ->comment("Trunk Z offset")->persisted(true)
-        ->defaultValue(0.02)->minimum(0.0)->maximum(0.1)
+        ->defaultValue(0.02)->minimum(0.0)->maximum(0.2)
         ;
-#endif
 
     // Splines
-#ifndef USE_QUINTICWALK
-    bind->bindNew("stepUpVel", params.stepUpVel, RhIO::Bind::PullOnly)
-        ->comment("Step up velocity")->persisted(true)
-        ->defaultValue(2.0)->minimum(-5.0)->maximum(5.0)
-        ;
-    bind->bindNew("stepDownVel", params.stepDownVel, RhIO::Bind::PullOnly)
-        ->comment("Step down velocity")->persisted(true)
-        ->defaultValue(2.0)->minimum(-5.0)->maximum(5.0)
-        ;
-    bind->bindNew("riseUpVel", params.riseUpVel, RhIO::Bind::PullOnly)
-        ->comment("Rise up velocity")->persisted(true)
-        ->defaultValue(2.0)->minimum(-5.0)->maximum(5.0)
-        ;
-    bind->bindNew("riseDownVel", params.riseDownVel, RhIO::Bind::PullOnly)
-        ->comment("Rise down velocity")->persisted(true)
-        ->defaultValue(2.0)->minimum(-5.0)->maximum(5.0)
-        ;
-    bind->bindNew("riseGain", params.riseGain, RhIO::Bind::PullOnly)
-        ->comment("Rise gain")->persisted(true)
-        ->defaultValue(0.02)->minimum(0.0)->maximum(0.1)
-        ;
-#else
     bind->bindNew("footApexPhase", _params("footApexPhase"), RhIO::Bind::PullOnly)
         ->persisted(true)
         ->defaultValue(_params("footApexPhase"))->minimum(0.0)->maximum(1.0)
@@ -201,7 +151,6 @@ Walk::Walk(Kick *kickMove)
         ->comment("Rise gain")->persisted(true)
         ->defaultValue(0.02)->minimum(0.0)->maximum(0.1)
         ;
-#endif
     
     bind->bindNew("startPhase", startPhase, RhIO::Bind::PullOnly)
         ->comment("Start phase")->persisted(true)
@@ -213,31 +162,14 @@ Walk::Walk(Kick *kickMove)
         ->comment("Swing gain")->persisted(true)
         ->defaultValue(0.0)->minimum(-0.1)->maximum(0.1)
         ;
-#ifndef USE_QUINTICWALK
-    bind->bindNew("swingRollGain", swingRollGain, RhIO::Bind::PullOnly)
-        ->comment("Swing roll gain")->persisted(true)
-        ->defaultValue(0.0)->minimum(-45)->maximum(45)
-        ;
-#endif
     bind->bindNew("swingPhase", swingPhase, RhIO::Bind::PullOnly)
         ->comment("Swing phase")->persisted(true)
         ->defaultValue(0.0)->minimum(0.0)->maximum(1.0)
         ;
-#ifndef USE_QUINTICWALK
-    bind->bindNew("swingPause", params.swingPause, RhIO::Bind::PullOnly)
-        ->comment("Swing pause")->persisted(true)
-        ->defaultValue(0.0)->minimum(0.0)->maximum(0.5)
-        ;
-    bind->bindNew("swingVel", params.swingVel, RhIO::Bind::PullOnly)
-        ->comment("Swing velocity")->persisted(true)
-        ->defaultValue(1.0)->minimum(0.0)->maximum(5.0)
-        ;
-#else
     bind->bindNew("swingPause", _params("trunkPause"), RhIO::Bind::PullOnly)
         ->comment("Swing pause")->persisted(true)
         ->defaultValue(0.0)->minimum(0.0)->maximum(0.5)
         ;
-#endif
 
     // Walk phase
     bind->bindNew("phase", phase, RhIO::Bind::PushOnly);
@@ -368,41 +300,48 @@ Walk::Walk(Kick *kickMove)
     bind->bindNew("walkKickName", walkKickName, RhIO::Bind::PullOnly)
             ->comment("Kick name")->defaultValue("classic");
 
+    //Last step variables
+    bind->node().newInt("lastStepAsk")
+        ->comment("0: no last step. 1: left foot. 2: right foot.")
+        ->defaultValue(0);
+    bind->node().newFloat("lastStepForward")
+        ->defaultValue(0.0);
+    bind->node().newFloat("lastStepLateral")
+        ->defaultValue(0.0);
+    bind->node().newFloat("lastStepTurn")
+        ->defaultValue(0.0);
+
     // Shoot warmup and cool down
     bind->bindNew("cooldown", cooldown, RhIO::Bind::PullOnly)
-        ->defaultValue(1)->comment("Cooldown duration [s]")->persisted(true);
+        ->defaultValue(1.0)->comment("Cooldown duration [s]")->persisted(false);
     bind->bindNew("warmup", warmup, RhIO::Bind::PullOnly)
-        ->defaultValue(1)->comment("Warmup [s]")->persisted(true);
+        ->defaultValue(0.75)->comment("Warmup [s]")->persisted(false);
         
-#ifndef USE_QUINTICWALK
-    bind->bindNew("paramsStepGain", params.stepGain, RhIO::Bind::PushOnly)
-        ->comment("IKWalk really used step parameters");
-    bind->bindNew("paramsLateralGain", params.lateralGain, RhIO::Bind::PushOnly)
-        ->comment("IKWalk really used lateral parameters");
-    bind->bindNew("paramsTurnGain", params.turnGain, RhIO::Bind::PushOnly)
-        ->comment("IKWalk really used turn parameters");
-#else
     bind->bindNew("paramsStepGain", _orders.x(), RhIO::Bind::PushOnly)
         ->comment("IKWalk really used step parameters");
     bind->bindNew("paramsLateralGain", _orders.y(), RhIO::Bind::PushOnly)
         ->comment("IKWalk really used lateral parameters");
     bind->bindNew("paramsTurnGain", _orders.z(), RhIO::Bind::PushOnly)
         ->comment("IKWalk really used turn parameters");
-#endif
 
-    bind->node().newFloat("ratio");
+    bind->bindNew("pressureYStdThresholdWarmup", pressureYStdThresholdWarmup, RhIO::Bind::PullOnly)
+        ->defaultValue(0.04);
+    bind->bindNew("pressureYStdThresholdCooldown", pressureYStdThresholdCooldown, RhIO::Bind::PullOnly)
+        ->defaultValue(0.02);
+    bind->bindNew("pressureYStd", pressureYStd, RhIO::Bind::PushOnly);
+    bind->bindNew("pressureY", pressureY, RhIO::Bind::PushOnly);
     
     // Speed limits
     bind->bindNew("maxRotation", maxRotation, RhIO::Bind::PullOnly)
+        ->defaultValue(12.0);
+
+    bind->bindNew("maxStep", maxStep, RhIO::Bind::PullOnly)
+        ->defaultValue(40.0);
+
+    bind->bindNew("maxStepBackward", maxStepBackward, RhIO::Bind::PullOnly)
         ->defaultValue(20.0);
 
-    bind->bindNew("maxStep [mm/step]", maxStep, RhIO::Bind::PullOnly)
-        ->defaultValue(45.0);
-
-    bind->bindNew("maxStepBackward [mm/step]", maxStepBackward, RhIO::Bind::PullOnly)
-        ->defaultValue(20.0);
-
-    bind->bindNew("maxLateral [mm/step]", maxLateral, RhIO::Bind::PullOnly)
+    bind->bindNew("maxLateral", maxLateral, RhIO::Bind::PullOnly)
         ->defaultValue(30.0);
 
     bind->bindNew("maxDStepByCycle", maxDStepByCycle, RhIO::Bind::PullOnly)
@@ -419,6 +358,10 @@ Walk::Walk(Kick *kickMove)
     bind->bindNew("dontWalk", dontWalk, RhIO::Bind::PullOnly)
         ->defaultValue(false);
 
+    bind->bindNew("gkMustRaise", gkMustRaise, RhIO::Bind::PullOnly)
+            ->comment("goal keeper flag: walk must raise")->defaultValue(false);
+    bind->bindNew("gkMustBlock", gkMustBlock, RhIO::Bind::PullOnly)
+            ->comment("goal keeper flag: walk must be blocked")->defaultValue(false);
 
 #ifdef MODE_NOMINAL
     bind->node().newFloat("guessPhase");
@@ -426,22 +369,6 @@ Walk::Walk(Kick *kickMove)
     bind->node().newFloat("phaseMaxV")
         ->defaultValue(0.1);
     bind->node().newBool("nominalError");
-#endif
-
-    // Zeroing extras
-#ifndef USE_QUINTICWALK
-    params.extraLeftX = 0;
-    params.extraLeftY = 0;
-    params.extraLeftZ = 0;
-    params.extraLeftYaw = 0;
-    params.extraLeftPitch = 0;
-    params.extraLeftRoll = 0;
-    params.extraRightX = 0;
-    params.extraRightY = 0;
-    params.extraRightZ = 0;
-    params.extraRightYaw = 0;
-    params.extraRightPitch = 0;
-    params.extraRightRoll = 0;
 #endif
 
     bind->pull();
@@ -465,19 +392,11 @@ bool Walk::isNewStep() const
         
 Eigen::Vector4d Walk::getRawOrder() const
 {
-#ifndef USE_QUINTICWALK
-    return Eigen::Vector4d(
-        params.stepGain, 
-        params.lateralGain, 
-        params.turnGain,
-        params.enabledGain);
-#else
     return Eigen::Vector4d(
         _orders.x(), 
         _orders.y(), 
         _orders.z(),
         _isEnabled);
-#endif
 }
 
 Eigen::Vector4d Walk::getOrder() const
@@ -530,6 +449,33 @@ Eigen::Vector3d Walk::getMaxDeltaOrders() const
   bound << maxDStepByCycle / 1000, maxDLatByCycle / 1000, deg2rad(maxDTurnByCycle);
   return bound;
 }
+        
+void Walk::askLastStep(const Eigen::Vector3d& deltaPose)
+{
+    if (!_isEnabled || isLastStep()) {
+        return;
+    }
+
+    bool isFootLeft = true;
+    if (deltaPose.y() > 0.0) {
+        isFootLeft = true;
+    } else if (deltaPose.y() < 0.0) {
+        isFootLeft = false;
+    } else if (deltaPose.z() >= 0.0) {
+        isFootLeft = true;
+    } else {
+        isFootLeft = false;
+    }
+
+    if (isFootLeft) {
+        bind->node().setInt("lastStepAsk", 1);
+    } else {
+        bind->node().setInt("lastStepAsk", 2);
+    }
+    bind->node().setFloat("lastStepForward", deltaPose.x());
+    bind->node().setFloat("lastStepLateral", deltaPose.y());
+    bind->node().setFloat("lastStepTurn", deltaPose.z());
+}
 
 std::string Walk::getName()
 {
@@ -574,10 +520,16 @@ bool Walk::isKicking()
 {
     return shouldKickLeft || shouldKickRight || shootingLeft || shootingRight;
 }
+        
+bool Walk::isLastStep() const
+{
+    return 
+        (_lastStepPhase >= 0.0) ||
+        (bind->node().getInt("lastStepAsk") != 0);
+}
 
 void Walk::onStart()
 {
-#ifdef USE_QUINTICWALK
     //Compute trunk height on all DOF set to zero
     Eigen::VectorXd cpyDOF = 
         Helpers::getServices()->model->goalModel()
@@ -591,7 +543,6 @@ void Walk::onStart()
         Helpers::getServices()->model->goalModel()
         .get().position("left_foot_tip", "right_foot_tip").y();
     Helpers::getServices()->model->goalModel().get().setDOFVect(cpyDOF);
-#endif
 
     // Ensuring safety of head
     Move * head  = getScheduler()->getMove("head");
@@ -605,9 +556,12 @@ void Walk::onStart()
         tmp->setDisabled(true);
     }
     // Default values for variables
+    ratioHistory.clear();
     bind->pull();
     lastWalkEnable = false;
     walkEnable = false;
+    walkEnableTarget = false;
+    walkEnableTimeSinceChange = 0;
     walkStep = 0.0;
     walkLateral = 0.0;
     walkTurn = 0.0;
@@ -629,16 +583,13 @@ void Walk::onStart()
     waitT = 0;
     phase = 0;
     lastPhase = 0;
+    pressureY = 0;
+    pressureYStd = 0;
+    t = 0;
+    ratioHistory.clear();
+    _lastStepPhase = -1.0;
+    _lastStepCount = 0;
 
-#ifndef USE_QUINTICWALK
-    params.swingRollGain     = deg2rad(swingRollGain);
-    params.swingGain         = swingGain;
-    params.swingPhase        = swingPhase;
-    trunkRoll_pose           = deg2rad(trunkRoll);
-    params.trunkPitch        = 0.0;
-    params.trunkXOffset      = 0.0;
-    params.trunkYOffset      = trunkYOffset;
-#else
     _params("footDistance") = 2.0*_footYOffset + _footDistance;
     _params("trunkSwing")        = swingGain/std::fabs(_params("footDistance"));
     _params("trunkPhase")        = swingPhase;
@@ -650,7 +601,6 @@ void Walk::onStart()
     _engine.setParameters(_params);
     _engine.setOrders(Eigen::Vector3d(0.0, 0.0, 0.0), false);
     _engine.forceRebuildTrajectories();
-#endif
 
     //security for arms. TODO should be a init command.
     setTorqueLimit("left_shoulder_pitch", 0.2);
@@ -658,6 +608,12 @@ void Walk::onStart()
     setTorqueLimit("left_shoulder_roll", 0.2);
     setTorqueLimit("right_shoulder_roll", 0.2);
 
+
+    initElbowOffsetValue=RhIO::Root.getFloat("/moves/walk/elbowOffset");
+    initArmsRollValue=RhIO::Root.getFloat("/moves/walk/armsRoll");
+    initTrunkZOffsetValue=0.02;//RhIO::Root.getFloat("/moves/walk/trunkZOffset");
+    
+    
     //Turn off the control on rhio variables
     control(false);
     bind->push();
@@ -670,10 +626,6 @@ void Walk::onStop()
 
 void Walk::updateParams(double factor, float step, float lateral, float turn)
 {
-#ifndef USE_QUINTICWALK
-    float targetSwingRollGain = deg2rad(swingRollGain);
-    float targetTrunkRoll = deg2rad(trunkRoll);
-#endif
     float targetSwingGain = swingGain;
     float targetSwingPhase = swingPhase;
     float targetTrunkPitch;
@@ -688,15 +640,6 @@ void Walk::updateParams(double factor, float step, float lateral, float turn)
         targetTrunkPitch = deg2rad(trunkPitch_backward) + deg2rad(step*P_stepPitch_back);
     }
 
-#ifndef USE_QUINTICWALK
-    params.swingRollGain     = factor*params.swingRollGain     + (1-factor)*targetSwingRollGain;
-    params.swingGain         = factor*params.swingGain         + (1-factor)*targetSwingGain;
-    params.swingPhase        = factor*params.swingPhase        + (1-factor)*targetSwingPhase;
-    trunkRoll_pose           = factor*trunkRoll_pose           + (1-factor)*targetTrunkRoll;
-    params.trunkPitch        = factor*params.trunkPitch        + (1-factor)*targetTrunkPitch;
-    params.trunkXOffset      = factor*params.trunkXOffset      + (1-factor)*targetTrunkXOffset;
-    params.trunkYOffset      = factor*params.trunkYOffset      + (1-factor)*targetTrunkYOffset;
-#else
     _params("footDistance") = 2.0*_footYOffset + _footDistance;
     _params("trunkSwing")     = 
         (factor*_params("trunkSwing")*std::fabs(_params("footDistance")) + (1-factor)*targetSwingGain)/std::fabs(_params("footDistance"));
@@ -705,25 +648,60 @@ void Walk::updateParams(double factor, float step, float lateral, float turn)
     _params("trunkXOffset")   = factor*_params("trunkXOffset")      + (1-factor)*targetTrunkXOffset;
     _params("trunkYOffset")   = factor*_params("trunkYOffset")      + (1-factor)*targetTrunkYOffset;
     _params("trunkHeight")    = _trunkHeight - _trunkZOffset;
-#endif
+}
+
+
+static float getLinear(float x,float x1, float y1,float x2, float y2){
+  if (x1==x2){
+    return y2;
+  }
+  if (y1==y2) return y1;
+  float a=(y1-y2)/(x1-x2);
+  return x*a+y2-x2*a;
 }
 
 void Walk::step(float elapsed)
 {
+    static float t;
+    static float tgk=-1,tgk2=-1;
     auto &decision = getServices()->decision;
     auto &model = getServices()->model;
-
-#ifndef USE_QUINTICWALK
-    params.extraLeftX = 0;
-    params.extraLeftY = 0;
-    params.extraLeftZ = 0;
-    params.extraRightX = 0;
-    params.extraRightY = 0;
-    params.extraRightZ = 0;
-#endif
+    
+    t += elapsed;
 
     bind->pull();
 
+    if (gkMustBlock){
+      return;
+    }
+    
+    if (gkMustRaise){
+      if (tgk<0) tgk=0;
+      tgk+=elapsed;
+      if (_trunkZOffset>initTrunkZOffsetValue){
+	double x=RhIO::Root.getFloat("/moves/goal_keeper/stopMoveTime");
+
+	double z;
+	if (tgk>x)
+	  z=_trunkZOffset-0.1;
+	else
+	  z=getLinear(tgk+elapsed,tgk,_trunkZOffset,x,initTrunkZOffsetValue);
+	if (z<initTrunkZOffsetValue) z=initTrunkZOffsetValue;
+	RhIO::Root.setFloat("/moves/walk/trunkZOffset", z);
+      }
+      else {
+	tgk=-1;
+	if (tgk2<0) tgk2=elapsed;
+	else tgk2+=elapsed;
+	if (tgk2>1){ // leave 1s of cool down
+	  tgk2=-1;
+	  RhIO::Root.setFloat("/moves/walk/elbowOffset", initElbowOffsetValue);
+	  RhIO::Root.setFloat("/moves/walk/armsRoll", initArmsRollValue);
+	  RhIO::Root.setBool("/moves/walk/gkMustRaise",false);
+	}
+      }
+    }
+    
     // Getting orders
     float lateral= walkLateral;
     float step = walkStep;
@@ -749,29 +727,49 @@ void Walk::step(float elapsed)
     updateParams(smoothTransition, smoothingStep, smoothingLateral, smoothingTurn);
 
     // Smoothing
-    smoothing = smoothing*smoothCommands + (walkEnable ? 1 : 0)*(1.0-smoothCommands);
+    smoothing = smoothing*smoothCommands + (walkEnableTarget ? 1 : 0)*(1.0-smoothCommands);
     bool newStep = isNewStep();
     if (!forbidOrders && newStep) {
-        VariationBound::update(smoothingStep, step, maxDStepByCycle, 1);
-        VariationBound::update(smoothingLateral, lateral, maxDLatByCycle, 1);
-        VariationBound::update(smoothingTurn, turn, maxDTurnByCycle, 1);
+        double tmpMaxDStepByCycle = maxDStepByCycle;
+        double tmpMaxDLatByCycle = maxDLatByCycle;
+        double tmpMaxDTurnByCycle = maxDTurnByCycle;
+        
+        // We accept way more deceleration than acceleration
+        if (smoothingStep > step) tmpMaxDStepByCycle *= 5;
+        if (smoothingLateral > lateral) tmpMaxDLatByCycle *= 5;
+        if (smoothingTurn > turn) tmpMaxDTurnByCycle *= 5;
+        
+        VariationBound::update(smoothingStep, step, tmpMaxDStepByCycle, 1);
+        VariationBound::update(smoothingLateral, lateral, tmpMaxDLatByCycle, 1);
+        VariationBound::update(smoothingTurn, turn, tmpMaxDTurnByCycle, 1);
     }
     bool isEnabled = (smoothing > 0.95);
+    
+    // Computing y pressure std
+    ratioHistory.pushValue(t, pressureY);
+    pressureYStd = 0;
+    auto historyValues = ratioHistory.getValues();
+    std::vector<double> values;
+    for (auto value : historyValues) {
+        values.push_back(value.second);
+    }
+    pressureYStd = standardDeviation(values);
+    bool isStableWarmup = pressureYStd < pressureYStdThresholdWarmup;
+    bool isStableCooldown = pressureYStd < pressureYStdThresholdCooldown;
+
+    
+    if (walkEnable != walkEnableTarget) {
+        walkEnableTimeSinceChange += elapsed;
+        if ((!walkEnable && walkEnableTimeSinceChange > 0.3) ||
+            (walkEnable && isStableCooldown)) {
+            walkEnableTarget = walkEnable;
+        }
+    } else {
+        walkEnableTimeSinceChange = 0;
+    }
+
 
     // Setting real parameters used gains
-#ifndef USE_QUINTICWALK
-    params.enabledGain = smoothing;
-    if (forbidOrders) {
-      params.stepGain = 0;
-      params.lateralGain = 0;
-      params.turnGain = 0;
-    }
-    else if (newStep) {
-      params.stepGain = (stepTrim+smoothingStep)/1000.0;
-      params.lateralGain = (lateralTrim+smoothingLateral)/1000.0;
-      params.turnGain = deg2rad(turnTrim+smoothingTurn);
-    }
-#else
     _isEnabled = (smoothing > 0.5);
     if (forbidOrders) {
         _orders.setZero();
@@ -781,7 +779,6 @@ void Walk::step(float elapsed)
         _orders.y() = (lateralTrim+smoothingLateral)/1000.0;
         _orders.z() = deg2rad(turnTrim+smoothingTurn);
     }
-#endif
     lastPhase = phase;
 
     // Detecting 0->1 to trigger kicking on the lefr or right
@@ -794,31 +791,21 @@ void Walk::step(float elapsed)
     }
     prevKickRight = walkKickRight;
 
-#ifndef USE_QUINTICWALK
-    // Update the robot base only if walk is enabled
-    model->setReadBaseUpdate(smoothing > 0.1);
-    params.trunkRoll = trunkRoll_pose;
-#else
     model->setReadBaseUpdate(_engine.isEnabled());
-#endif
     
-#ifndef USE_QUINTICWALK
-    waitT += elapsed;
-#else
     if (!_engine.isEnabled()) {
         waitT += elapsed;
     }
-#endif
 
     if (shootingLeft || shootingRight) {
         if (isWarmingUp) {
-            if (waitT > warmup && !decision->freezeKick) {
+	  if (isStableWarmup && waitT > warmup && !decision->freezeKick && (gkMustRaise==false)) {
                 startMove("kick", 0.0);
                 isWarmingUp = false;
                 shootT = 0;
             }
         } else if (isCoolingDown) {
-            if (waitT > cooldown) {
+            if (isStableCooldown && waitT > cooldown) {
                 isCoolingDown = false;
                 endShoot();
                 if (shootingLeft) {
@@ -833,30 +820,22 @@ void Walk::step(float elapsed)
             stopMove("kick", 0.0);
         }
 
-#ifndef USE_QUINTICWALK
-        params.enabledGain = smoothing = 0;
-        params.stepGain = 0;
-        params.riseGain = 0;
-        params.swingGain = 0;
-#else
         _isEnabled = false;
         _orders.setZero();
-#endif
     }
     
     auto& pressureLeft = getScheduler()->getManager()->dev<RhAL::PressureSensor4>("left_pressure");
     auto& pressureRight = getScheduler()->getManager()->dev<RhAL::PressureSensor4>("right_pressure");
     double total = pressureLeft.getWeight() + pressureRight.getWeight();
-    double y = 0;
+    pressureY = 0;
     if (total > 0) {
-        y = 
+        pressureY = 
             (
             pressureLeft.getWeight()*(pressureLeft.getY() + 0.07) +
             pressureRight.getWeight()*(pressureRight.getY() - 0.07)
             )/total
             ;
     }
-    bind->node().setFloat("ratio", y);
 
 #ifdef MODE_NOMINAL
     double nominalScore = 0;
@@ -881,19 +860,102 @@ void Walk::step(float elapsed)
     bind->node().setBool("nominalError", nominalScore > securityTreshold);
 #endif
 
+    //Check if a last step is asked
+    int isAskLast = bind->node().getInt("lastStepAsk");
+    if (_lastStepPhase < 0.0 && isEnabled && isAskLast != 0) {
+        //Start the last step
+        _lastStepPhase = _engine.getPhase();
+        _lastStepCount = 0;
+    }
+
     float prevPhase = phase;
-#ifdef USE_QUINTICWALK
-    _engine.setParameters(_params);
-    _engine.setOrders(_orders, _isEnabled);
+    //Control the walk engine
+    if (_lastStepPhase >= 0.0) {
+        //Last step case
+        //Count half walk cycle
+        //and walk in place during waiting
+        if (
+            _lastStepCount%2 == 0 &&
+            ((_lastStepPhase >= 0.0 && 
+            _lastStepPhase < 0.5 && 
+            _engine.getPhase() > 0.5) ||
+            (_lastStepPhase >= 0.5 && 
+            _lastStepPhase < 1.0 && 
+            _engine.getPhase() < 0.5))
+        ) {
+            _lastStepCount++;
+        }
+        if (
+            _lastStepCount%2 == 1 &&
+            ((_lastStepPhase >= 0.0 && 
+            _lastStepPhase < 0.5 && 
+            _engine.getPhase() < 0.5) ||
+            (_lastStepPhase >= 0.5 && 
+            _lastStepPhase < 1.0 && 
+            _engine.getPhase() > 0.5))
+        ) {
+            _lastStepCount++;
+        }
+        //Retrieve last step displacement
+        Eigen::Vector3d lastOrder(
+            bind->node().getFloat("lastStepForward"),
+            bind->node().getFloat("lastStepLateral"),
+            bind->node().getFloat("lastStepTurn"));
+        //Select when to make the step according 
+        //to chosen foot and current walk phase
+        bool isFinished = false;
+        if (isAskLast == 1 && _lastStepPhase > 0.5) {
+            if (_lastStepCount == 0) {
+                _engine.setOrders(Eigen::Vector3d(0.0, 0.0, 0.0), true);
+            } else if (_lastStepCount == 1) {
+                _engine.setOrders(lastOrder, true);
+            } else {
+                isFinished = true;
+            }
+        } else if (isAskLast == 1 && _lastStepPhase < 0.5) {
+            if (_lastStepCount == 0) {
+                _engine.setOrders(lastOrder, true);
+            } else {
+                isFinished = true;
+            }
+        } else if (isAskLast == 2 && _lastStepPhase > 0.5) {
+            if (_lastStepCount == 0) {
+                _engine.setOrders(lastOrder, true);
+            } else {
+                isFinished = true;
+            }
+        } else if (isAskLast == 2 && _lastStepPhase < 0.5) {
+            if (_lastStepCount == 0) {
+                _engine.setOrders(Eigen::Vector3d(0.0, 0.0, 0.0), true);
+            } else if (_lastStepCount == 1) {
+                _engine.setOrders(lastOrder, true);
+            } else {
+                isFinished = true;
+            }
+        } 
+        //Stop the walk when the last step is performed
+        if (isFinished) {
+            _lastStepPhase = -1.0;
+            _lastStepCount = 0;
+            bind->node().setInt("lastStepAsk", 0);
+            _isEnabled = false;
+            smoothing = 0.0;
+            walkEnableTarget = false;
+            walkEnable = false;
+            bind->node().setBool("walkEnable", false);
+            _engine.setOrders(Eigen::Vector3d(0.0, 0.0, 0.0), false);
+        }
+    } else {
+        //Normal step case
+	if (gkMustRaise) _isEnabled=false;
+        _engine.setParameters(_params);
+        _engine.setOrders(_orders, _isEnabled);
+    }
     if (!_securityEnabled) {
         _engine.update(elapsed);
     }
     phase = _engine.getPhase();
     bool isSuccess = _engine.assignModel(model->goalModel());
-#else
-    bool isSuccess = Leph::IKWalk::walk(
-        model->goalModel().get(), params, phase, elapsed);
-#endif
     if (isSuccess) {
         bool securityBlock = false;
 
@@ -906,7 +968,7 @@ void Walk::step(float elapsed)
 #else
             // Right foot security
             if (phasePassed(prevPhase, phase, securityPhase)) {
-                if (y > securityTreshold) {
+                if (pressureY > securityTreshold) {
                     securityBlock = true;
                 }
             }
@@ -914,7 +976,7 @@ void Walk::step(float elapsed)
             double p = 0.5+securityPhase;
             if (p > 1) p -= 1;
             if (phasePassed(prevPhase, phase, p)) {
-                if (y < -securityTreshold) {
+                if (pressureY < -securityTreshold) {
                     securityBlock = true;
                 }
             }
@@ -947,17 +1009,7 @@ void Walk::step(float elapsed)
             }
         }
 
-#ifndef USE_QUINTICWALK
-        // Arms
-        float targetLeftRoll = 0;
-        float targetRightRoll = 0;
-        leftRoll = leftRoll*0.95 + targetLeftRoll*0.05;
-        params.extraLeftRoll = deg2rad(leftRoll);
-        rightRoll = rightRoll*0.95 + targetRightRoll*0.05;
-        params.extraRightRoll = deg2rad(rightRoll);
-#else
         _securityEnabled = securityBlock;
-#endif
 
         //if (!kickMove->isRunning() || kickMove->over) {
             model->flushLegs(_smoothing);
@@ -998,11 +1050,6 @@ void Walk::step(float elapsed)
     _logs.logBase(simModel);
     _logs.logModel(sim);
     _logs.logData("time:phase", phase);
-#ifndef USE_QUINTICWALK
-    Leph::VectorLabel walkParams;
-    Leph::IKWalk::convertParameters(walkParams, params);
-    _logs.logData(walkParams);
-#endif
     _logs.flush();
 
     bind->push();
@@ -1019,3 +1066,4 @@ void Walk::endShoot()
     shootingLeft = false;
     shootingRight = false;
 }
+

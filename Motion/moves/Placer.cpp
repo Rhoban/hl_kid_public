@@ -64,7 +64,7 @@ Placer::Placer(Walk *walk)
     bind->bindNew("lmDriftXMax", lmDriftXMax, RhIO::Bind::PullOnly)
       ->defaultValue(0.2)
       ->comment("in lateral step mode, maximum X drift allowed before correction [m]");
-    bind->bindNew("lmDriftXMaxHyst", lmDriftXMax, RhIO::Bind::PullOnly)
+    bind->bindNew("lmDriftXMaxHyst", lmDriftXMaxHyst, RhIO::Bind::PullOnly)
       ->defaultValue(0.1)
       ->comment("in lateral step mode, maximum X drift allowed before correction / Hysteresis [m]");
     
@@ -91,7 +91,7 @@ Placer::Placer(Walk *walk)
     
     bind->bindNew("avoidOpponents", avoidOpponents, RhIO::Bind::PullOnly)
         ->defaultValue(true)->comment("Avoid the opponents?");
-    bind->bindNew("avoidMates", avoidOpponents, RhIO::Bind::PullOnly)
+    bind->bindNew("avoidMates", avoidMates, RhIO::Bind::PullOnly)
         ->defaultValue(true)->comment("Avoid the team mates based on localisation?");
     bind->bindNew("avoidSharedOpponents", avoidSharedOpponents, RhIO::Bind::PullOnly)
         ->defaultValue(false)->comment("Avoid the shared opponents?");
@@ -265,7 +265,7 @@ void Placer::step(float elapsed)
     }
 
     // Finding a path using the avoider
-    auto result  = avoider.findPath(pos, target, 0.4, &score, [](Point pt) {
+    auto result  = avoider.findPath(pos, target, 0.1, &score, [](Point pt) {
             return fabs(pt.x) < (Constants::field.fieldLength/2 + 0.5) &&
             fabs(pt.y) < (Constants::field.fieldWidth/2 + 0.5);
             });
@@ -330,6 +330,7 @@ void Placer::step(float elapsed)
             rushDistOk = false;
         }
     }
+    
 
     // While the robot has not arrived, update the orders
     if (!arrived) {

@@ -53,13 +53,11 @@ class DecisionService : public Service
 
         /**
          * Should I let play?
+         * This will be true if we should let play because of the rules, like if
+         * we can't enter the center circle before the 10 first seconds or if a
+         * free kick is awarded to the opponent team
          */
         bool shouldLetPlay;
-        
-        /**
-         * Should I let play because of team?
-         */
-        bool shouldLetPlayTeam;
 
         /**
          * With what radius should I let play?
@@ -70,11 +68,6 @@ class DecisionService : public Service
          * Should we go for the shared ball?
          */
         bool ballIsShared;
-
-        /**
-         * Am I the nearest robot to the ball ?
-         */
-        bool iAmTheNearest;
         
         /**
          * Position of the shared ball
@@ -106,6 +99,12 @@ class DecisionService : public Service
          */
         bool lastSeenBallRight;
 
+        /**
+         * Time since last fall [s]
+         * 0 if the robot is currently fallen
+         */
+        float timeSinceFall;
+
         /// Filtered direction of the fall
         FallDirection fallDirection;
         /// Filtered status of the fall
@@ -131,11 +130,6 @@ class DecisionService : public Service
 
         // Low pressure threshold
         float lowPressureThreshold;
-        
-        /**
-         * Should we let play our team
-         */
-        bool shouldLetTeamPlay(float ballDistance);
 
         /**
          * Should we listen to the other players?

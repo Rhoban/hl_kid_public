@@ -86,8 +86,7 @@ bool RefereeService::tick(double elapsed)
           for (int robot_id = 0; robot_id < team.getNbRobots(); robot_id++) {
             if (robot_id != id &&
                 team.getRobot(robot_id).getPenalty() != Constants::PENALTY_NONE) {
-              loc->removeTeamMate(robot_id);
-              loc->removeSharedOpponentProvider(robot_id);
+                loc->removeSharedOpponentProvider(robot_id);
             }
           }
         }
@@ -221,6 +220,12 @@ bool RefereeService::isFreezePhase()
     if (force) return false;
     return getGameState().getActualGameState() == Constants::STATE_SET
         || (isFreeKick() && getGameState().getSecondaryMode() == 1);
+}
+
+bool RefereeService::isFinishedPhase()
+{
+    if (force) return false;
+    return getGameState().getActualGameState() == Constants::STATE_FINISHED;
 }
 
 void RefereeService::checkPlaying()

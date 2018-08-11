@@ -35,7 +35,7 @@ DecisionService::DecisionService()
     bind.bindNew("postKickTrackingTime", postKickTrackingTime, RhIO::Bind::PullOnly)
         ->comment("Time during which a ball is considered as moving after a "
                   "robot started performing a kick [s]")
-        ->defaultValue(2);
+        ->defaultValue(5);
 
     // Field quality
     bind.bindNew("fieldQThreshold", fieldQThreshold, RhIO::Bind::PullOnly)
@@ -48,6 +48,8 @@ DecisionService::DecisionService()
     // Robot fallen
     bind.bindNew("isFallen", isFallen)
         ->comment("Is the robot fallen ?")->defaultValue(false);
+    bind.bindNew("timeSinceFall", timeSinceFall, RhIO::Bind::PushOnly)
+        ->comment("Time elapsed since last fall [s]")->defaultValue(0);
 // TODO: solve issue with RhIO and enums
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstrict-aliasing"
@@ -60,8 +62,6 @@ DecisionService::DecisionService()
     // Let play
     bind.bindNew("shouldLetPlay", shouldLetPlay, RhIO::Bind::PushOnly)
         ->comment("Should let play?")->defaultValue(false);
-    bind.bindNew("shouldLetPlayTeam", shouldLetPlayTeam)
-        ->comment("Should let play because of team?")->defaultValue(false);
 
     // Let play radius
     bind.bindNew("letPlayRadius", letPlayRadius, RhIO::Bind::PushOnly)
@@ -80,14 +80,13 @@ DecisionService::DecisionService()
         ->comment("Share smoothing")->defaultValue(0.99)->persisted(true);
     bind.bindNew("fakeTeamDecisions", fakeTeamDecisions, RhIO::Bind::PullOnly)
         ->defaultValue(false)->persisted(true);
-    
+
     // Shared ball position
     bind.bindNew("shareX", shareX)->defaultValue(4.5);
     bind.bindNew("shareY", shareY)->defaultValue(3);
 
     // Is the ball shared?
     bind.bindNew("ballIsShared", ballIsShared)->defaultValue(false);
-    bind.bindNew("iAmTheNearest", iAmTheNearest)->defaultValue(false);
 
     // Pressure and handling
     bind.bindNew("lowPressureThreshold", lowPressureThreshold, RhIO::Bind::PullOnly)
@@ -109,34 +108,17 @@ DecisionService::DecisionService()
     // Cooperation
     bind.bindNew("cooperation", cooperation, RhIO::Bind::PullOnly)
         ->comment("Enabling the cooperation with team")->defaultValue(true)->persisted(true);
-    
+
     // Who is the goal ?
     bind.bindNew("goalId", goalId, RhIO::Bind::PullOnly)
         ->comment("Id of the goal")->defaultValue(2);
-    
+
     selfAttackingT = 0;
     freeKickT = 99;
     handledT = 0;
 
     // Ensuring all default values have been written
     bind.pull();
-}
-
-bool DecisionService::shouldLetTeamPlay(float ballDistance)
-{
-    auto teamPlay = getServices()->teamPlay;
-    int me = teamPlay->myId();
-    int priority = teamPlay->myPriority();
-    for (auto entry : teamPlay->allInfo()) {
-        auto info = entry.second;
-        if (info.id != me && !info.isOutdated() && info.state == BallHandling && 
-                (info.priority > priority || (info.priority == priority && 
-                            info.getBallDistance() < ballDistance))) {
-            return true;
-        }
-    }
-    return false;
-
 }
 
 bool DecisionService::tick(double elapsed)
@@ -147,20 +129,15 @@ bool DecisionService::tick(double elapsed)
 
     // Should we let the other players play?
     auto ballPos = loc->getBallPosSelf();
-    float ballDistance = ballPos.getLength();
-    bool shouldLetPlayTeamTMP = shouldLetTeamPlay(ballDistance);
-    
+
     if (isBallQualityGood) {
         lastSeenBallRight = (ballPos.y > 0);
     }
 
     // Computing the radius
     letPlayRadius = 0;
-    
-    if (shouldLetPlayTeam) {
-        letPlayRadius = teamPlay->teamRadius;
-    }
-    shouldLetPlay = cooperation && shouldLetPlayTeam;
+
+    shouldLetPlay = false;
     if (referee->shouldLetPlay()) {
         if (letPlayRadius < teamPlay->refereeRadius) {
             letPlayRadius = teamPlay->refereeRadius;
@@ -199,15 +176,14 @@ bool DecisionService::tick(double elapsed)
         }
     }
 
-    shouldLetPlayTeam = shouldLetPlayTeamTMP;
-
     // Shared ball
     bool ballWasShared = ballIsShared;
     ballIsShared = false;
     float bestDist = -1;
-    iAmTheNearest = isBallQualityGood;
 
-
+    // XXX Captain: this should be removed once captain is implemented
+    //              This is quite outdated anyway
+    // 
     // Ball sharing is enabled, we are well localized on the field
     if (!isFallen && enableShare && isFieldQualityGood) {
         auto infos = teamPlay->allInfo();
@@ -220,10 +196,6 @@ bool DecisionService::tick(double elapsed)
                     // This player sees the ball and is well localized
                     float dist = sqrt(pow(info.ballX, 2) + pow(info.ballY, 2));
 
-                    if (dist < ballDistance) {
-                        iAmTheNearest = false;
-                    }
-                    
                     if (dist < 3 && (bestDist < 0 || dist < bestDist)) {
                         // We use the shared ball that is known to be nearest from
                         // the broadcaster robot
@@ -287,11 +259,11 @@ bool DecisionService::tick(double elapsed)
           // Computing fallStatus
           if (max_imu_angle < threshold_fallen) {
             fallStatus = FallStatus::Falling;
-          } else { 
+          } else {
             fallStatus = FallStatus::Fallen;
           }
           // Computing fallDirection
-          if (fabs(pitch_angle) > fabs(roll_angle)) {
+          if (fabs(pitch_angle) > threshold_falling) {
             if (pitch_angle > 0) {
               fallDirection = FallDirection::Forward;
             } else {
@@ -318,6 +290,12 @@ bool DecisionService::tick(double elapsed)
         }
     }
 
+    if (isFallen) {
+      timeSinceFall = 0;
+    } else {
+      timeSinceFall += elapsed;
+    }
+
     // Update the isBallMoving amd isMateKicking flags
     // a tmp value is used to ensure thread-safety
     const auto & teamplayInfos = getServices()->teamPlay->allInfo();
@@ -338,7 +316,7 @@ bool DecisionService::tick(double elapsed)
     isBallMoving  = tmpIsBallMoving;
     isMateKicking = tmpIsMateKicking;
 
-        
+
     bind.push();
 
     return true;

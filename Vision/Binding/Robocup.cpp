@@ -19,6 +19,7 @@
 
 #include "Filters/Features/TagsDetector.hpp"
 #include "Filters/Goal/GoalProvider.hpp"
+#include "Filters/Obstacles/ObstacleProvider.hpp"
 #include "Filters/Source/SourcePtGrey.hpp"
 
 #include "CameraState/CameraState.hpp"
@@ -78,6 +79,8 @@ Robocup::Robocup(MoveScheduler *scheduler)
       manual_logger("manual_logs", true, 10000),
       moving_ball_logger("moving_ball_logs", false, 1000),
       autologMovingBall(false),
+      game_logger("game_logs", false, 15 * 60 * 40),// Allows 15 minutes at 40 fps ->
+      autolog_games(false),
       logBallExtraTime(2.0),
       writeBallStatus(false),
       _scheduler(scheduler),
@@ -123,6 +126,8 @@ Robocup::Robocup(const std::string &configFile, MoveScheduler *scheduler)
        manual_logger("manual_logs", true, 10000),
        moving_ball_logger("moving_ball_logs", false, 1000),
        autologMovingBall(false),
+       game_logger("game_logs", true, 15 * 60 * 40),// Allows 15 minutes at 40 fps
+       autolog_games(false),
        logBallExtraTime(2.0),
        writeBallStatus(false),
        benchmark(false), benchmarkDetail(0),
@@ -221,6 +226,7 @@ Json::Value Robocup::toJson() const {
   v["benchmarkDetail"] = benchmarkDetail;
   v["imageDelay"] = imageDelay;
   v["autologMovingBall"] = autologMovingBall;
+  v["autologGames"] = autolog_games;
   v["logBallExtraTime"] = logBallExtraTime;
   v["writeBallStatus"] = writeBallStatus;
   v["ignoreOutOfFieldBalls"] = ignoreOutOfFieldBalls;
@@ -242,6 +248,7 @@ void Robocup::fromJson(const Json::Value & v, const std::string & dir_name) {
   rhoban_utils::tryRead(v,"benchmarkDetail",&benchmarkDetail);
   rhoban_utils::tryRead(v,"imageDelay",&imageDelay);
   rhoban_utils::tryRead(v,"autologMovingBall",&autologMovingBall);
+  rhoban_utils::tryRead(v,"autologGames",&autolog_games);
   rhoban_utils::tryRead(v,"logBallExtraTime",&logBallExtraTime);
   rhoban_utils::tryRead(v,"writeBallStatus",&writeBallStatus);
   rhoban_utils::tryRead(v,"ignoreOutOfFieldBalls",&ignoreOutOfFieldBalls);
@@ -341,6 +348,9 @@ void Robocup::initRhIO() {
   RhIO::Root.newFloat("/Vision/logBallExtraTime")
       ->defaultValue(logBallExtraTime)
       ->comment("Extra duration of log once ball stopped being flagged as moving [s]");
+  RhIO::Root.newBool("/Vision/autologGames")
+      ->defaultValue(autolog_games)
+      ->comment("If enabled, write logs while game is playing");
   RhIO::Root.newBool("/Vision/benchmark")
       ->defaultValue(benchmark)
       ->comment("Is logging activated ?");
@@ -539,6 +549,7 @@ void Robocup::step() {
 
 void Robocup::importFromRhIO() {
   autologMovingBall = RhIO::Root.getValueBool("/Vision/autologMovingBall").value;
+  autolog_games = RhIO::Root.getValueBool("/Vision/autologGames").value;
   logBallExtraTime = RhIO::Root.getValueFloat("/Vision/logBallExtraTime").value;
   benchmark = RhIO::Root.getValueBool("/Vision/benchmark").value;
   benchmarkDetail = RhIO::Root.getValueInt("/Vision/benchmarkDetail").value;
@@ -622,6 +633,50 @@ void Robocup::readPipeline() {
       std::cerr
           << "Failed to import ball positions, check pipeline. Exception = "
           << e.what() << std::endl;
+    }
+  }
+
+  // Robot detection
+  if (pipeline.isFilterPresent("obstacleByDNN")) {
+    try {
+      Vision::Filter &robotDetector_f = pipeline.get("obstacleByDNN");
+      const Filters::ObstacleProvider &robotDetector =
+          dynamic_cast<const Filters::ObstacleProvider &>(robotDetector_f);
+
+      const std::vector<Eigen::Vector2d> & frame_obstacles = robotDetector.getObstacles();
+
+      if (robotFilter) {
+        std::vector<Eigen::Vector3d> positions;
+        for (const Eigen::Vector2d & obs : frame_obstacles) {
+          auto tmp = cs->robotPosFromImg(obs.x(), obs.y(), 1, 1, false);
+          Eigen::Vector3d in_world(tmp.x, tmp.y, 0);
+          positions.push_back(in_world);
+        }
+        robotFilter->newFrame(positions);
+  
+        LocalisationService *loc = _scheduler->getServices()->localisation;
+        std::vector<Eigen::Vector3d> filteredPositions;
+        for (auto &candidate : robotFilter->getCandidates()) {
+          // XXX: Threshold to Rhioize
+          if (candidate.score > 0.45) {
+            filteredPositions.push_back(candidate.object);
+          }
+        }
+        loc->setOpponentsWorld(filteredPositions);
+      }
+
+      detectedRobots.clear();
+      // Going from pixels to world referential
+      for (const Eigen::Vector2d & obs : frame_obstacles) {
+        detectedRobots.push_back(
+          cs->robotPosFromImg(obs.x(), obs.y(), 1, 1, false));  // false=invariant world reference
+                                                                // frame (which integrates the
+                                                                // odometry)
+      }
+    } catch (const std::bad_cast &e) {
+      std::cerr << "Failed to import robot positions, check pipeline. Exception = " << e.what() << std::endl;
+    } catch (const std::runtime_error &exc) {
+      std::cerr << "Robocup::readPipeline: robot detection: runtime_error: " << exc.what() << std::endl;
     }
   }
 
@@ -826,9 +881,9 @@ void Robocup::loggingStep() {
   // Starting autoLog
   if (startAutoLog) {
     moving_ball_logger.initSession();
-      out.log("Starting a session at '%s'", moving_ball_logger.getSessionPath().c_str());
-      std::string lowLevelPath = moving_ball_logger.getSessionPath() + "/lowLevel.log";
-      startLoggingLowLevel(lowLevelPath);
+    out.log("Starting a session at '%s'", moving_ball_logger.getSessionPath().c_str());
+    std::string lowLevelPath = moving_ball_logger.getSessionPath() + "/lowLevel.log";
+    startLoggingLowLevel(lowLevelPath);
   }
   // Trying to log entry (can fail is maxSize is reached)
   if (useAutoLogEntry) {
@@ -836,6 +891,26 @@ void Robocup::loggingStep() {
       moving_ball_logger.pushEntry(entry);
     } catch (const ImageLogger::SizeLimitException & exc) {
       stopAutoLog = true;
+    }
+  }
+
+  // Status of game_logs
+  bool is_playing = referee->isPlaying();
+  bool gameLogActive = game_logger.isActive();
+  bool useGameLogEntry = autolog_games && is_playing;
+  bool startGameLog = !gameLogActive && useGameLogEntry;
+  bool stopGameLog = gameLogActive && !useGameLogEntry;
+  if (startGameLog) {
+    game_logger.initSession();
+    out.log("Starting a session at '%s'", game_logger.getSessionPath().c_str());
+    std::string lowLevelPath = game_logger.getSessionPath() + "/lowLevel.log";
+    startLoggingLowLevel(lowLevelPath);
+  }
+  if (useGameLogEntry) {
+    try {
+      game_logger.pushEntry(entry);
+    } catch (const ImageLogger::SizeLimitException & exc) {
+      stopGameLog = true;
     }
   }
   logMutex.unlock();
@@ -850,6 +925,11 @@ void Robocup::loggingStep() {
     std::string lowLevelPath = moving_ball_logger.getSessionPath() + "/lowLevel.log";
     stopLoggingLowLevel(lowLevelPath);
     moving_ball_logger.endSession();
+  }
+  if (stopGameLog) {
+    std::string lowLevelPath = game_logger.getSessionPath() + "/lowLevel.log";
+    stopLoggingLowLevel(lowLevelPath);
+    game_logger.endSession();
   }
 }
 
@@ -909,20 +989,18 @@ void Robocup::updateBallInformations() {
   if (writeBallStatus) {
     // Some properties are shared for the frame
     double time = getNowTS().getTimeSec();
-    Eigen::Vector2d usable_speed_world_eigen = ballSpeedEstimator->getUsableSpeed();
-    cv::Point2f usable_speed_world = rg2cv2f(usable_speed_world_eigen);
-    cv::Point2f usable_speed_self = rg2cv2f(cs->getVecInSelf(usable_speed_world_eigen));
     for (const Eigen::Vector3d & pos_in_world : positions) {
+      Point ball_pos_in_field = loc->worldToField(pos_in_world);
+      Point robot_pos = loc->getFieldPos();
+      double field_dir = normalizeRad(loc->getFieldOrientation());
+      
       Eigen::Vector2d tmp = pos_in_world.segment(0,2);
       cv::Point2f pos_in_self = cs->getPosInSelf(rg2cv2f(tmp));
       // Entry format:
-      // TimeStamp, xWorld, yWorld, vxWorld, vyWorld, xSelf, ySelf, vxSelf, vySelf,
-      out.log("ballStatusEntry: %lf,%f,%f,%f,%f,%f,%f,%f,%f",
-              time,
-              pos_in_world.x(), pos_in_world.y(),
-              usable_speed_world.x, usable_speed_world.y,
-              pos_in_self.x, pos_in_self.y,
-              usable_speed_self.x, usable_speed_self.y);
+      // TimeStamp, ballX, ballY, robotX, robotY, fieldDir
+      out.log("ballStatusEntry: %lf,%f,%f,%f,%f,%f",
+              time, ball_pos_in_field.x, ball_pos_in_field.y,
+              robot_pos.x, robot_pos.y, field_dir);
     }
   }
 }
@@ -1477,7 +1555,10 @@ void Robocup::startLoggingLowLevel(const std::string & path) {
 
 void Robocup::stopLoggingLowLevel(const std::string & path) {
   out.log("Saving lowlevel log to: %s", path.c_str());
+  TimeStamp start_save = TimeStamp::now();
   _scheduler->getServices()->model->stopNamedLog(path);
+  TimeStamp end_save = TimeStamp::now();
+  out.log("Lowlevel logs saved in %f seconds", diffSec(start_save, end_save));
 }
 
 int Robocup::getFrames() { return pipeline.frames; }

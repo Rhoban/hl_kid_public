@@ -30,6 +30,8 @@ public:
   void step(float elapsed);
 
 protected:
+  rhoban_utils::Control stepper, lateraler, aligner;
+    
   std::vector<Target> targets;
 
   /**
@@ -42,12 +44,12 @@ protected:
   // Foot choice
   bool left;
   double lastFootChoice;
+  
+  // Potential repulsion
+  double repulsion;
 
   // °/m
   double degsPerMeter;
-
-  // Target X/Y for the ball in the robot frame
-  double targetX, targetY;
 
   // Don't walk
   bool dontWalk;
@@ -56,11 +58,15 @@ protected:
   double distanceThreshold, angleThreshold;
 
   // Gains
-  double stepP, rotationP, stepPunch;
+  double stepP, lateralI, stepI, stepPunch, lateralP;
 
   // Current tolerance used
   double currentTolerance;
 
   void enterState(std::string state);
   void exitState(std::string state);
+
+  Eigen::Vector3d computeLastStepDelta(
+      const std::string& kickName, 
+      bool isRightFoot);
 };

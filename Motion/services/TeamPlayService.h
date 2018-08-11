@@ -52,9 +52,10 @@ class TeamPlayService : public Service
         bool tick(double elapsed);
 
         /**
-         * Should I attack?
+         * Is team play enabled ?
          */
-        rhoban_team_play::TeamPlayState myRole();
+        bool isEnabled();
+    
  
         /**
          * TeamPlay radius
@@ -65,11 +66,6 @@ class TeamPlayService : public Service
          * Extra radius for the referee
          */
         double refereeRadius;
-
-        /**
-         * My priority
-         */
-        rhoban_team_play::TeamPlayPriority myPriority();
         
     private:
 

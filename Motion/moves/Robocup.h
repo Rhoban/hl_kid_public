@@ -2,6 +2,7 @@
 
 #include "STM.h"
 #include <string>
+#include <services/TeamPlayService.h>
 
 class Placer;
 class StandUp;
@@ -16,7 +17,6 @@ class Robocup : public STM
         void onStop();
         void step(float elapsed);
         bool isFallen();
-        bool isHandled();
 
     protected:
         Walk *walk;
@@ -24,6 +24,7 @@ class Robocup : public STM
         Placer * placer;
 
         float t;
+        bool isHandled;
         bool wasHandled;
         bool lastRefereePlaying;
         bool rememberStart;
@@ -33,6 +34,7 @@ class Robocup : public STM
         bool autoKickOff;
         int standup_try;
         double timeSinceVisionInactive;
+        double timeSinceNoConsistency;
 
         // Robot position at end of initial phase for autoKickOff
         float autoStartX;
@@ -49,4 +51,6 @@ class Robocup : public STM
 
         void enterState(std::string state);
         void exitState(std::string state);
+        
+        void setTeamPlayState(rhoban_team_play::TeamPlayState state);
 };
