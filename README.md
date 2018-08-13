@@ -1,5 +1,6 @@
 # Rhoban HL kid public code
 
+The 2018 version has been tested under Ubuntu 16.04 with OpenCV2 only.
 
 ## Installing APT dependencies
 
