@@ -210,7 +210,7 @@ Walk::Walk(Kick *kickMove)
         ->persisted(true)
         ;
     bind->bindNew("elbowOffset", elbowOffset, RhIO::Bind::PullOnly)
-        ->defaultValue(-150.0)->minimum(-200.0)->maximum(30.0)
+        ->defaultValue(-157)->minimum(-200.0)->maximum(30.0)
         ->persisted(true)
         ;
     
