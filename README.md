@@ -62,8 +62,8 @@ You can then install the latest stable release of all the rhoban source code:
 Note: You should make a fork of rhoban/environments_public in order to have
 the configuration for your own robots.
 
-    ./workspace install starkitrobots/hl_kid_public.git
-    ./workspace install starkitrobots/environments_starkit.git
+    ./workspace install StarkitRobots/hl_kid_public.git
+    ./workspace install StarkitRobots/environments_starkit.git
     ./workspace install rhoban/monitoring_robocup.git
     ./workspace git checkout final_2018
     ln -sf  src/starkitrobots/environments_starkit/ env
